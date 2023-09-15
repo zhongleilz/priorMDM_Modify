@@ -18,6 +18,119 @@ from model.cfg_sampler import wrap_model
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+
+def evaluate_control(motion_loaders, file):
+    l2_dict = OrderedDict({})
+    skating_ratio_dict = OrderedDict({})
+    trajectory_score_dict = OrderedDict({})
+    motion_loader_name = 'vald'
+    motion_loader = motion_loaders[motion_loader_name]
+
+
+    print("motion_loaders",motion_loaders)
+    dataset = "humanl"
+    print('========== Evaluating Control ==========')
+    # all_dist = []
+    all_size = 0
+    dist_sum = 0
+    skate_ratio_sum = 0
+    traj_err = []
+    traj_err_key = traj_err_key = ["traj_fail_20cm", "traj_fail_50cm", "kps_fail_20cm", "kps_fail_50cm", "kps_mean_err(m)"]
+    with torch.no_grad():
+        for idx, batch in enumerate(motion_loader):
+            word_embeddings, pos_one_hots, _, sent_lens, motions, m_lens, _,gt_motions,choose_mask,_, hint = batch
+            # process motion
+            # sample to motion
+            mean_for_eval = motion_loader.dataset.dataloader.dataset.mean_for_eval
+            std_for_eval = motion_loader.dataset.dataloader.dataset.std_for_eval
+            motions = motions * std_for_eval + mean_for_eval
+            gt_motions = gt_motions * std_for_eval + mean_for_eval
+
+            motions = motions.float()
+            gt_motions = gt_motions.float()
+            choose_mask = choose_mask[0].numpy()
+
+            _,_,n_feats = motions.shape
+
+            if n_feats == 263:
+                dataset = 'humanl'
+            else:
+                dataset = 'kit'
+
+            if dataset == "kit":
+                motions = recover_from_ric(motions, 21)
+                gt_motions = recover_from_ric(gt_motions, 21)
+            else:
+                motions = recover_from_ric(motions, 22)
+                gt_motions = recover_from_ric(gt_motions, 22)
+            
+            # foot skating error
+            skate_ratio, skate_vel = calculate_skating_ratio(motions.permute(0, 2, 3, 1))  # [batch_size]
+            skate_ratio_sum += skate_ratio.sum()
+
+            # control l2 error
+            # process hint
+            if dataset == "kit":
+                mask_hint = hint.view(hint.shape[0], hint.shape[1], 21, 3).sum(dim=-1, keepdim=True) != 0
+            else:
+                mask_hint = hint.view(hint.shape[0], hint.shape[1], 22, 3).sum(dim=-1, keepdim=True) != 0
+
+            if dataset == "kit":
+                hint = hint.view(hint.shape[0], hint.shape[1], 21, 3) 
+            else:
+                hint = hint.view(hint.shape[0], hint.shape[1], 22, 3) 
+
+
+            # motion_ = motions.permute(0,2,3,1)
+            # hint_ = hint.permute(0,2,3,1)
+            
+            from utils.simple_eval import simple_eval
+            # results = simple_eval(motion_, hint_)
+            # print("simple_eval:",results)
+            for motion,gt, h, mask in zip(motions,gt_motions, hint, mask_hint):
+                
+                motion_ = motion.unsqueeze(0).numpy()
+                gt = gt.unsqueeze(0).numpy()
+                h_ = h.unsqueeze(0).numpy()
+                mask_ = mask.unsqueeze(0).numpy()
+                #(1, 196, 21, 3)
+
+                control_error = control_l2(motion_, gt, mask_)[:,:,0]
+                control_error = control_error * choose_mask
+                choose_mask_in_eval_idx = np.where(choose_mask == 0)
+                mean_error = control_error.sum() / choose_mask.sum()
+
+                dist_sum += mean_error
+                control_error = control_error.reshape(-1)
+                mask = mask.reshape(-1)
+                err_np = calculate_trajectory_error(control_error, mean_error, choose_mask)
+                traj_err.append(err_np)
+
+            all_size += motions.shape[0]
+
+        # l2 dist
+        dist_mean = dist_sum / all_size
+        l2_dict[motion_loader_name] = dist_mean
+
+        # Skating evaluation
+        skating_score = skate_ratio_sum / all_size
+        skating_ratio_dict[motion_loader_name] = skating_score
+
+        ### For trajecotry evaluation from GMD ###
+        traj_err = np.stack(traj_err).mean(0)
+        trajectory_score_dict[motion_loader_name] = traj_err
+
+    print(f'---> [{motion_loader_name}] Control L2 dist: {dist_mean:.4f}')
+    print(f'---> [{motion_loader_name}] Control L2 dist: {dist_mean:.4f}', file=file, flush=True)
+    print(f'---> [{motion_loader_name}] Skating Ratio: {skating_score:.4f}')
+    print(f'---> [{motion_loader_name}] Skating Ratio: {skating_score:.4f}', file=file, flush=True)
+    line = f'---> [{motion_loader_name}] Trajectory Error: '
+    for (k, v) in zip(traj_err_key, traj_err):
+        line += '(%s): %.4f ' % (k, np.mean(v))
+    print(line)
+    print(line, file=file, flush=True)
+    return l2_dict, skating_ratio_dict, trajectory_score_dict
+
 def evaluate_matching_score(eval_wrapper, motion_loaders, file):
     match_score_dict = OrderedDict({})
     R_precision_dict = OrderedDict({})
@@ -32,7 +145,10 @@ def evaluate_matching_score(eval_wrapper, motion_loaders, file):
         # print(motion_loader_name)
         with torch.no_grad():
             for idx, batch in enumerate(motion_loader):
-                word_embeddings, pos_one_hots, _, sent_lens, motions, m_lens, _, _ = batch
+                if len(batch) == 10:
+                    word_embeddings, pos_one_hots, _, sent_lens, motions, m_lens, _,_,hint, _ = batch
+                else:
+                    word_embeddings, pos_one_hots, _, sent_lens, motions, m_lens, _,_,_, _,_ = batch
                 text_embeddings, motion_embeddings = eval_wrapper.get_co_embeddings(
                     word_embs=word_embeddings,
                     pos_ohot=pos_one_hots,
@@ -77,7 +193,7 @@ def evaluate_fid(eval_wrapper, groundtruth_loader, activation_dict, file):
     print('========== Evaluating FID ==========')
     with torch.no_grad():
         for idx, batch in enumerate(groundtruth_loader):
-            _, _, _, sent_lens, motions, m_lens, _, _ = batch
+            _, _, _, sent_lens, motions, m_lens, _, _ ,_,_= batch
             motion_embeddings = eval_wrapper.get_motion_embeddings(
                 motions=motions,
                 m_lens=m_lens
@@ -163,6 +279,12 @@ def evaluation(eval_wrapper, gt_loader, eval_motion_loaders, log_file, replicati
             print(f'Time: {datetime.now()}', file=f, flush=True)
             fid_score_dict = evaluate_fid(eval_wrapper, gt_loader, acti_dict, f)
 
+
+            print(f'Time: {datetime.now()}')
+            print(f'Time: {datetime.now()}', file=f, flush=True)
+            control_l2_dict, skating_ratio_dict, trajectory_score_dict = evaluate_control(motion_loaders, f)
+
+
             print(f'Time: {datetime.now()}')
             print(f'Time: {datetime.now()}', file=f, flush=True)
             div_score_dict = evaluate_diversity(acti_dict, f, diversity_times)
@@ -192,6 +314,7 @@ def evaluation(eval_wrapper, gt_loader, eval_motion_loaders, log_file, replicati
                     all_metrics['FID'][key] = [item]
                 else:
                     all_metrics['FID'][key] += [item]
+
 
             for key, item in div_score_dict.items():
                 if key not in all_metrics['Diversity']:
@@ -246,15 +369,16 @@ if __name__ == '__main__':
     print(f'Will save to log file [{log_file}]')
     assert args.overwrite or not os.path.exists(log_file), "Log file already exists!"
 
+    args.eval_mode = 'debug'
     print(f'Eval mode [{args.eval_mode}]')
     if args.eval_mode == 'debug':
-        num_samples_limit = 1000  # None means no limit (eval over all dataset)
+        num_samples_limit = 10  # None means no limit (eval over all dataset)
         run_mm = False
         mm_num_samples = 0
         mm_num_repeats = 0
         mm_num_times = 0
-        diversity_times = 300
-        replication_times = 5  # about 3 Hrs
+        diversity_times = 10
+        replication_times = 1  # about 3 Hrs
     elif args.eval_mode == 'wo_mm':
         num_samples_limit = 1000
         run_mm = False
