@@ -16,7 +16,7 @@ import torch
 from data_loaders.humanml_utils import get_inpainting_mask
 from torch.utils.data import DataLoader
 from diffusion.inpainting_gaussian_diffusion import InpaintingGaussianDiffusion
-
+import numpy as np
 def main():
     args = train_inpainting_args()
     fixseed(args.seed)
@@ -34,6 +34,19 @@ def main():
     with open(args_path, 'w') as fw:
         json.dump(vars(args), fw, indent=4, sort_keys=True)
 
+    length = 196
+    if args.masked_rate in [1,2,5]:
+        choose_seq_num = int(args.masked_rate)
+    elif args.masked_rate in [25,100]:
+        choose_seq_num = int(args.masked_rate*length*0.01)
+    else:
+        choose_seq_num = np.random.choice(length-1,1) + 1
+
+    # print("choose_seq_num",choose_seq_num)
+    choose_seq = np.random.choice(length,choose_seq_num,replace = False)
+    choose_seq.sort()
+    choose_mask = np.zeros((1, length))
+    choose_mask[:,choose_seq] = 1
     dist_util.setup_dist(args.device)
 
     print("creating data loader...")
@@ -46,7 +59,7 @@ def main():
         
         def __iter__(self):
             for motion, cond in super().__getattribute__('data').__iter__():
-                cond['y']['inpainting_mask'] = torch.tensor(get_inpainting_mask(args.inpainting_mask, motion.shape)).to(motion.device)
+                cond['y']['inpainting_mask'] = torch.tensor(get_inpainting_mask(args.inpainting_mask, motion.shape,choose_mask,True)).to(motion.device)
                 yield motion, cond
         
         def __getattribute__(self, name):
