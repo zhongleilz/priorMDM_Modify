@@ -24,6 +24,9 @@ def get_dataset_class(name, load_mode):
     elif name == "pw3d":
         from data_loaders.humanml.data.dataset import PW3D
         return PW3D
+    elif name == "kit":
+        from data_loaders.humanml.data.dataset import KIT
+        return KIT
     else:
         raise ValueError(f'Unsupported dataset name [{name}]')
 
@@ -32,6 +35,7 @@ def get_collate_fn(name, load_mode='train'):
         from data_loaders.humanml.data.dataset import collate_fn as t2m_eval_collate
         return t2m_eval_collate
     if name in ["humanml", "kit"]:
+        print("name,name",name)
         return t2m_collate
     elif name == 'pw3d':
         return pw3d_collate
@@ -50,7 +54,8 @@ def get_collate_fn(name, load_mode='train'):
 
 def get_dataset(name, num_frames, split='train', load_mode='train', batch_size=None, opt=None, short_db=False, cropping_sampler=False, size=None):
     DATA = get_dataset_class(name, load_mode)
-    if name in ["humanml", "pw3d"]:
+    if name in ["humanml", "pw3d","kit"]:
+
         dataset = DATA(split=split, num_frames=num_frames, load_mode=load_mode, size=size)
     elif name == "babel":
         from data_loaders.amass.transforms import SlimSMPLTransform
@@ -72,13 +77,14 @@ def get_dataset(name, num_frames, split='train', load_mode='train', batch_size=N
 def get_dataset_loader(name, batch_size, num_frames, split='train', load_mode='train', opt=None, short_db=False, cropping_sampler=False, size=None):
     if load_mode == 'text_only':
         load_mode = 'train'
+    
     dataset = get_dataset(name, num_frames, split, load_mode, batch_size, opt, short_db, cropping_sampler, size)
     collate = get_collate_fn(name, load_mode)
 
     n_workers = 1 if load_mode in ['movement_train', 'evaluator_train'] else 8
+
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True,
-        num_workers=n_workers, drop_last=True, collate_fn=collate
-    )
+        num_workers=n_workers, drop_last=True, collate_fn=collate)
 
     return loader
