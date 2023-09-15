@@ -69,7 +69,7 @@ def get_model_args(args, data):
     # default args
     clip_version = 'ViT-B/32'
     action_emb = 'tensor'
-    cond_mode = 'text' if args.dataset in ['humanml', 'babel', 'pw3d'] else 'action'
+    cond_mode = 'text' if args.dataset in ['humanml', 'babel', 'pw3d','kit'] else 'action'
     if hasattr(data.dataset, 'num_actions'):
         num_actions = data.dataset.num_actions
     else:
@@ -83,6 +83,10 @@ def get_model_args(args, data):
     if args.dataset in ['humanml', 'pw3d']:
         data_rep = 'hml_vec'
         njoints = 263
+        nfeats = 1
+    elif args.dataset == 'kit':
+        data_rep = 'hml_vec'
+        njoints = 251
         nfeats = 1
     elif args.dataset == 'babel':
         data_rep = 'rot6d'
