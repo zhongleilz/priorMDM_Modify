@@ -319,7 +319,8 @@ class GaussianDiffusion:
         if model_kwargs is None:
             model_kwargs = {}
 
-        B, C = x.shape[:2]
+        B, C,_,_ = x.shape
+        t = t
         assert t.shape == (B,)
         model_output = model(x, self._scale_timesteps(t), **model_kwargs)
 
@@ -1421,7 +1422,7 @@ class GaussianDiffusion:
                 ModelVarType.LEARNED,
                 ModelVarType.LEARNED_RANGE,
             ]:
-                B, C = x_t.shape[:2]
+                B, C = x_t.shape
                 assert model_output.shape == (B, C * 2, *x_t.shape[2:])
                 model_output, model_var_values = th.split(model_output, C, dim=1)
                 # Learn the variance using the variational bound, but don't let
