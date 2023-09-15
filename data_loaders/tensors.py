@@ -1,7 +1,7 @@
 import random
 import torch
 from data_loaders.amass.tools import collate_tensor_with_padding
-
+import numpy as np
 def lengths_to_mask(lengths, max_len):
     # max_len = max(lengths)
     mask = torch.arange(max_len, device=lengths.device).expand(len(lengths), max_len) < lengths.unsqueeze(1)
@@ -65,6 +65,10 @@ def collate(batch):
     if 'action' in notnone_batches[0]:
         actionbatch = [b['action'] for b in notnone_batches]
         cond['y'].update({'action': torch.as_tensor(actionbatch).unsqueeze(1)})
+    
+    if 'hint' in notnone_batches[0] and notnone_batches[0]['hint'] is not None:
+        hint = [b['hint']for b in notnone_batches]
+        cond['y'].update({'hint': torch.tensor(np.array(hint))})
 
     # collate action textual names
     if 'action_text' in notnone_batches[0]:
@@ -88,9 +92,12 @@ def t2m_collate(batch):
         'inp': torch.from_numpy(b[4].T).float().unsqueeze(1), # [seqlen, J] -> [J, 1, seqlen]
         'text': b[2], #b[0]['caption']
         'tokens': b[6],
+        'hint': b[-1],
+        'mask':b[-2],
         'lengths': b[5],
         'is_transition': torch.zeros(1), # just for eval not really needed
     } for b in batch]
+    
     return collate(adapted_batch)
 
 def babel_eval_collate(batch):
