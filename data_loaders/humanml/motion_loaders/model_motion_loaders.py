@@ -47,7 +47,6 @@ class MMGeneratedDataset(Dataset):
         return motions, m_lens
 
 
-
 def get_motion_loader(opt_path, batch_size, ground_truth_dataset, mm_num_samples, mm_num_repeats, device):
     opt = get_opt(opt_path, device)
 
@@ -56,7 +55,7 @@ def get_motion_loader(opt_path, batch_size, ground_truth_dataset, mm_num_samples
         w_vectorizer = WordVectorizer('./glove', 'our_vab')
     else:
         raise KeyError('Dataset not recognized!!')
-    print('Generating %s ...' % opt.name)
+    print('Generating 2 %s ...' % opt.name)
 
     if 'v6' in opt.name:
         dataset = CompV6GeneratedDataset(opt, ground_truth_dataset, w_vectorizer, mm_num_samples, mm_num_repeats)
@@ -81,8 +80,10 @@ def get_mdm_loader(args, model, diffusion, batch_size, ground_truth_loader, mm_n
     # dataset = CompMDMGeneratedDataset(opt, ground_truth_dataset, ground_truth_dataset.w_vectorizer, mm_num_samples, mm_num_repeats)
     if hasattr(args, "inpainting_mask") and args.inpainting_mask != '':
         dataset = CompMDMInpaintingGeneratedDataset(args, model, diffusion, ground_truth_loader, mm_num_samples, mm_num_repeats, max_motion_length, num_samples_limit, scale)
+        
     elif num_unfoldings > 1:
         dataset = CompMDMUnfoldingGeneratedDataset(args, model, diffusion, ground_truth_loader, mm_num_samples, mm_num_repeats, max_motion_length, num_samples_limit, scale, num_unfoldings)
+        
     else:
         dataset = CompMDMGeneratedDataset(args, model, diffusion, ground_truth_loader, mm_num_samples, mm_num_repeats, max_motion_length, num_samples_limit, scale)
 
