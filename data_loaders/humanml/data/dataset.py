@@ -13,9 +13,10 @@ from torch.utils.data._utils.collate import default_collate
 from data_loaders.amass.sampling import FrameSampler
 from data_loaders.humanml.utils.word_vectorizer import WordVectorizer
 from data_loaders.humanml.utils.get_opt import get_opt
+from ..scripts.motion_process import recover_root_rot_pos, recover_from_ric
 
-from data_loaders.amass.babel import BABEL
-
+# from data_loaders.amass.babel import BABEL
+from ..scripts.motion_process import recover_root_rot_pos, recover_from_ric
 
 MOTION_TYPES = [
     '_0',
@@ -236,9 +237,18 @@ class Text2MotionDatasetV2(data.Dataset):
 
         new_name_list = []
         length_list = []
+
+
+        total_motion = []
+
         for name in tqdm(id_list):
             try:
                 motion = np.load(pjoin(opt.motion_dir, name + '.npy'))
+                joint = recover_from_ric(torch.from_numpy(motion).float(),21)
+                motion_raw = np.load(pjoin(opt.motion_dir[:-5] + 's', name + '.npy'))
+
+
+                total_motion.append(joint)
                 if (len(motion)) < min_motion_len or (len(motion) >= 200):
                     continue
                 text_data = []
@@ -319,10 +329,23 @@ class Text2MotionDatasetV2(data.Dataset):
                 print(e)
                 pass
 
+
+        all_data = np.concatenate(total_motion,axis=0)
+
+        mean_raw = np.mean(all_data,axis=0)
+        std_raw = np.mean(all_data,axis=0)
+
+        mean_raw = mean_raw.reshape(63)
+        std_raw = std_raw.reshape(63)
+
+
         name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
 
         self.mean = mean
         self.std = std
+
+        self.raw_mean = mean_raw#np.load(pjoin("/cfs/zhonglei/priorMDM", 'Mean_raw.npy'))
+        self.raw_std = std_raw#np.load(pjoin("/cfs/zhonglei/priorMDM", 'Std_raw.npy'))
         self.length_arr = np.array(length_list)
         self.data_dict = data_dict
         self.name_list = name_list
@@ -339,6 +362,47 @@ class Text2MotionDatasetV2(data.Dataset):
 
     def __len__(self):
         return len(self.data_dict) - self.pointer
+    
+    def random_mask(self, joints, num_joints=21):
+        controllable_joints = [0, 10, 11, 15, 20, 21]
+        # num_joints = len(controllable_joints)
+        # joints: length, 22, 3
+        # choose_joint = np.random.choice(num_joints, 1)
+        # choose_joint = controllable_joints[choose_joint[0]] #change this 
+        # left joints for now
+        # choose_joint = 20
+        # pelvis joints for now
+        choose_joint = 0
+        # head joints for now
+        # choose_joint = 15
+        # right wrist joints for now
+        # choose_joint = 21
+
+        length = joints.shape[0]
+        choose_seq_num = length #np.random.choice(length - 1, 1) + 1
+        choose_seq = np.random.choice(length, choose_seq_num, replace=False)
+        choose_seq.sort()
+
+        if self.opt.dataset_name != 'kit':
+            mask_seq = np.zeros((length, 22, 3)).astype(np.bool)
+            mask_seq[choose_seq, choose_joint] = True
+
+            mask = np.zeros((length, 1))
+
+            mask[choose_seq] = 1
+            # normalize
+            # joints = (joints - self.raw_mean.reshape(22, 3)) / self.raw_std.reshape(22, 3)
+        else:
+            mask_seq = np.zeros((length, 21, 3)).astype(np.bool)
+            mask_seq[choose_seq, choose_joint] = True
+            mask = np.zeros((length, 1))
+            mask[choose_seq] = 1
+            # normalize
+            # joints = (joints - self.raw_mean.reshape(21, 3)) / self.raw_std.reshape(21, 3)
+
+        joints = joints * mask_seq
+
+        return joints, mask
 
     def __getitem__(self, item):
         idx = self.pointer + item
@@ -380,6 +444,27 @@ class Text2MotionDatasetV2(data.Dataset):
         idx = random.randint(0, len(motion) - m_length)
         motion = motion[idx:idx+m_length]
 
+        # hint is global position of the controllable joints
+        if self.opt.dataset_name == 'kit':
+            joints = recover_from_ric(torch.from_numpy(motion).float(), 21)#change this for control joint
+        else:
+            joints = recover_from_ric(torch.from_numpy(motion).float(), 22)
+
+        joints = joints.numpy()
+        # only control left wrist
+        # hint = joints[:, 20, :]
+        # mask_seq = None
+        # joint_id = None
+        # control any joints at any time
+        hint,mask = self.random_mask(joints)
+
+        hint = hint.reshape(hint.shape[0], -1)
+
+        if m_length < self.max_motion_length:
+            hint = np.concatenate([hint,np.zeros((self.max_motion_length - m_length, hint.shape[1]))], axis=0)
+            mask = np.concatenate([mask,np.zeros((self.max_motion_length - m_length, mask.shape[1]))], axis=0)
+
+
         "Z Normalization"
         motion = (motion - self.mean) / self.std
 
@@ -390,7 +475,7 @@ class Text2MotionDatasetV2(data.Dataset):
         # print(word_embeddings.shape, motion.shape)
         # print(tokens)
         # FIXME: I removed the extra return value ([]) at the end
-        return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, '_'.join(tokens), []
+        return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, '_'.join(tokens),[],mask,hint
 
 
 
@@ -570,83 +655,83 @@ class PW3D_Text2MotionDatasetV2(data.Dataset):
 
 
 '''For training BABEL text2motion evaluators'''
-class BABEL_Text2MotionDatasetV2(BABEL):
+# class BABEL_Text2MotionDatasetV2(BABEL):
 
-    def __init__(self, split, datapath, transforms, opt, mean, std, w_vectorizer, sampler, mode, **kwargs):
-        BABEL.__init__(self, datapath=datapath, transforms=transforms, split=split, sampler=sampler,
-                       parse_tokens=True, mode=mode, short_db=kwargs.get('short_db', False),
-                       cropping_sampler=kwargs.get('cropping_sampler', False))  # tokens are needed for training
-        self.opt = opt
-        self.w_vectorizer = w_vectorizer
-        self.max_length = 20
-        self.pointer = 0
-        self.max_motion_length = opt.max_motion_length
-        self.mean = mean
-        self.std = std
+#     def __init__(self, split, datapath, transforms, opt, mean, std, w_vectorizer, sampler, mode, **kwargs):
+#         BABEL.__init__(self, datapath=datapath, transforms=transforms, split=split, sampler=sampler,
+#                        parse_tokens=True, mode=mode, short_db=kwargs.get('short_db', False),
+#                        cropping_sampler=kwargs.get('cropping_sampler', False))  # tokens are needed for training
+#         self.opt = opt
+#         self.w_vectorizer = w_vectorizer
+#         self.max_length = 20
+#         self.pointer = 0
+#         self.max_motion_length = opt.max_motion_length
+#         self.mean = mean
+#         self.std = std
 
-    def inv_transform(self, data):
-        return data * self.std + self.mean
+#     def inv_transform(self, data):
+#         return data * self.std + self.mean
 
-    def __getitem__(self, item):
-        keyid = self._split_index[item]
-        batch = self.load_keyid(keyid, mode='train')
+#     def __getitem__(self, item):
+#         keyid = self._split_index[item]
+#         batch = self.load_keyid(keyid, mode='train')
 
-        # Randomly choose a motion from batch
-        caption = batch['text']
-        tokens = batch['tokens']
-        motion = batch['features']
-        m_length = batch['length']
-        tansition_seq = batch['is_transition']
+#         # Randomly choose a motion from batch
+#         caption = batch['text']
+#         tokens = batch['tokens']
+#         motion = batch['features']
+#         m_length = batch['length']
+#         tansition_seq = batch['is_transition']
 
 
-        if len(tokens) < self.opt.max_text_len:
-            # pad with "unk"
-            tokens = ['sos/OTHER'] + tokens + ['eos/OTHER']
-            sent_len = len(tokens)
-            tokens = tokens + ['unk/OTHER'] * (self.opt.max_text_len + 2 - sent_len)
-        else:
-            # crop
-            tokens = tokens[:self.opt.max_text_len]
-            tokens = ['sos/OTHER'] + tokens + ['eos/OTHER']
-            sent_len = len(tokens)
-        pos_one_hots = []
-        word_embeddings = []
-        for token in tokens:
-            word_emb, pos_oh = self.w_vectorizer[token]
-            pos_one_hots.append(pos_oh[None, :])
-            word_embeddings.append(word_emb[None, :])
-        pos_one_hots = np.concatenate(pos_one_hots, axis=0)
-        word_embeddings = np.concatenate(word_embeddings, axis=0)
+#         if len(tokens) < self.opt.max_text_len:
+#             # pad with "unk"
+#             tokens = ['sos/OTHER'] + tokens + ['eos/OTHER']
+#             sent_len = len(tokens)
+#             tokens = tokens + ['unk/OTHER'] * (self.opt.max_text_len + 2 - sent_len)
+#         else:
+#             # crop
+#             tokens = tokens[:self.opt.max_text_len]
+#             tokens = ['sos/OTHER'] + tokens + ['eos/OTHER']
+#             sent_len = len(tokens)
+#         pos_one_hots = []
+#         word_embeddings = []
+#         for token in tokens:
+#             word_emb, pos_oh = self.w_vectorizer[token]
+#             pos_one_hots.append(pos_oh[None, :])
+#             word_embeddings.append(word_emb[None, :])
+#         pos_one_hots = np.concatenate(pos_one_hots, axis=0)
+#         word_embeddings = np.concatenate(word_embeddings, axis=0)
 
-        # Crop the motions in to times of 4, and introduce small variations
-        if self.opt.unit_length < 10:
-            coin2 = np.random.choice(['single', 'single', 'double'])
-        else:
-            coin2 = 'single'
+#         # Crop the motions in to times of 4, and introduce small variations
+#         if self.opt.unit_length < 10:
+#             coin2 = np.random.choice(['single', 'single', 'double'])
+#         else:
+#             coin2 = 'single'
 
-        if coin2 == 'double':
-            m_length = (m_length // self.opt.unit_length - 1) * self.opt.unit_length
-        elif coin2 == 'single':
-            m_length = (m_length // self.opt.unit_length) * self.opt.unit_length
+#         if coin2 == 'double':
+#             m_length = (m_length // self.opt.unit_length - 1) * self.opt.unit_length
+#         elif coin2 == 'single':
+#             m_length = (m_length // self.opt.unit_length) * self.opt.unit_length
 
-        idx = random.randint(0, abs(len(motion) - m_length))
+#         idx = random.randint(0, abs(len(motion) - m_length))
 
-        motion = motion[idx:idx+m_length]
-        tansition_seq = tansition_seq[idx:idx+m_length]
+#         motion = motion[idx:idx+m_length]
+#         tansition_seq = tansition_seq[idx:idx+m_length]
 
-        "Z Normalization"
-        motion = (motion - self.mean) / self.std
+#         "Z Normalization"
+#         motion = (motion - self.mean) / self.std
 
-        if m_length <= self.max_motion_length:
-            motion = np.concatenate([motion,
-                                     np.zeros((self.max_motion_length - m_length, motion.shape[1]))
-                                     ], axis=0)
-            tansition_seq = np.concatenate([tansition_seq,
-                                     np.zeros(self.max_motion_length - m_length)
-                                     ])
-        # print(word_embeddings.shape, motion.shape)
-        # print(tokens)
-        return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, '_'.join(tokens), tansition_seq
+#         if m_length <= self.max_motion_length:
+#             motion = np.concatenate([motion,
+#                                      np.zeros((self.max_motion_length - m_length, motion.shape[1]))
+#                                      ], axis=0)
+#             tansition_seq = np.concatenate([tansition_seq,
+#                                      np.zeros(self.max_motion_length - m_length)
+#                                      ])
+#         # print(word_embeddings.shape, motion.shape)
+#         # print(tokens)
+#         return word_embeddings, pos_one_hots, caption, sent_len, motion, m_length, '_'.join(tokens), tansition_seq
 
 
 '''For use of training baseline'''
@@ -877,37 +962,37 @@ class MotionDatasetV2(data.Dataset):
         return motion
 
 '''For training BABEL movement encoder (used by evaluators)'''
-class BABEL_MotionDatasetV2(BABEL):
+# class BABEL_MotionDatasetV2(BABEL):
 
-    def __init__(self, split, datapath, transforms, opt, mean, std, sampler, mode, **kwargs):
-        BABEL.__init__(self, datapath=datapath, transforms=transforms, split=split,  sampler=sampler,
-                       parse_tokens=False, mode=mode, **kwargs)  # Tokens are not needed
-        self.opt = opt
-        self.max_length = 20
-        self.pointer = 0
-        self.max_motion_length = opt.max_motion_length
-        self.mean = mean
-        self.std = std
+#     def __init__(self, split, datapath, transforms, opt, mean, std, sampler, mode, **kwargs):
+#         BABEL.__init__(self, datapath=datapath, transforms=transforms, split=split,  sampler=sampler,
+#                        parse_tokens=False, mode=mode, **kwargs)  # Tokens are not needed
+#         self.opt = opt
+#         self.max_length = 20
+#         self.pointer = 0
+#         self.max_motion_length = opt.max_motion_length
+#         self.mean = mean
+#         self.std = std
 
-    def inv_transform(self, data):
-        return data * self.std + self.mean
+#     def inv_transform(self, data):
+#         return data * self.std + self.mean
 
-    def __getitem__(self, item):
+#     def __getitem__(self, item):
 
-        keyid = self._split_index[item]
-        batch = self.load_keyid(keyid, mode='train')
-        motion_type = MOTION_TYPES[random.randint(0, len(MOTION_TYPES)-1)]
-        motion = batch['features' + motion_type]
-        m_length = batch['length' + motion_type]
-        assert m_length >= self.opt.window_size
+#         keyid = self._split_index[item]
+#         batch = self.load_keyid(keyid, mode='train')
+#         motion_type = MOTION_TYPES[random.randint(0, len(MOTION_TYPES)-1)]
+#         motion = batch['features' + motion_type]
+#         m_length = batch['length' + motion_type]
+#         assert m_length >= self.opt.window_size
 
-        idx = random.randint(0, m_length - self.opt.window_size)
-        _motion = motion[idx:idx + self.opt.window_size]
+#         idx = random.randint(0, m_length - self.opt.window_size)
+#         _motion = motion[idx:idx + self.opt.window_size]
 
-        "Z Normalization"
-        _motion = (_motion - self.mean) / self.std
+#         "Z Normalization"
+#         _motion = (_motion - self.mean) / self.std
 
-        return _motion
+#         return _motion
 
 class RawTextDataset(data.Dataset):
     def __init__(self, opt, mean, std, text_file, w_vectorizer):
@@ -1055,10 +1140,11 @@ class TextOnlyDataset(data.Dataset):
 
 # A wrapper class for t2m original dataset for MDM purposes
 class HumanML3D(data.Dataset):
-    def __init__(self, load_mode, datapath='./dataset/humanml_opt.txt', split="train", **kwargs):
+    def __init__(self, load_mode, datapath='./dataset/humanml_opt.txt', split="train",dataset_name='t2m', **kwargs):
         self.load_mode = load_mode
         
-        self.dataset_name = 't2m'
+        #change here!!!
+        self.dataset_name = dataset_name
         self.dataname = 't2m'
         self.split = split
 
@@ -1074,7 +1160,7 @@ class HumanML3D(data.Dataset):
         opt.checkpoints_dir = pjoin(abs_base_path, opt.checkpoints_dir)
         opt.data_root = pjoin(abs_base_path, opt.data_root)
         opt.save_root = pjoin(abs_base_path, opt.save_root)
-        opt.meta_dir = './dataset'
+        opt.meta_dir = '/work/vig/zhonglei/Control-mdm/dataset'
         opt.load_mode = load_mode
         self.opt = opt
         print('Loading dataset %s ...' % opt.dataset_name)
@@ -1085,9 +1171,12 @@ class HumanML3D(data.Dataset):
             self.std = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy'))
         elif load_mode in ['train', 'eval', 'text_only', 'prefix', 'text']:
             # used by our models
-            self.mean = np.load(pjoin(opt.data_root, 'Mean.npy'))
-            self.std = np.load(pjoin(opt.data_root, 'Std.npy'))
-
+            if self.dataset_name == "t2m":
+                self.mean = np.load(pjoin("/work/vig/Datasets/HumanML3D/HumanML3D", 'Mean.npy'))
+                self.std = np.load(pjoin("/work/vig/Datasets/HumanML3D/HumanML3D", 'Std.npy'))
+            else:
+                self.mean = np.load(pjoin("/work/vig/zhonglei/Control-mdm/dataset/KIT-ML", 'Mean.npy'))
+                self.std = np.load(pjoin("/work/vig/zhonglei/Control-mdm/dataset/KIT-ML", 'Std.npy'))
         if load_mode == 'eval':
             # used by T2M models (including evaluators)
             # this is to translate their norms to ours
@@ -1095,6 +1184,7 @@ class HumanML3D(data.Dataset):
             self.std_for_eval = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy'))
 
         self.split_file = pjoin(opt.data_root, f'{split}.txt')
+        print("self.split_file",self.split_file)
         if load_mode == 'text_only':
             self.t2m_dataset = TextOnlyDataset(self.opt, self.mean, self.std, self.split_file, **kwargs)
         else:
@@ -1105,6 +1195,7 @@ class HumanML3D(data.Dataset):
                                                              self.w_vectorizer)
             else:
                 self.t2m_dataset = Text2MotionDatasetV2(self.opt, self.mean, self.std, self.split_file, self.w_vectorizer, **kwargs)
+                print("len(self.t2m_dataset)",len(self.t2m_dataset))
             self.num_actions = 1 # dummy placeholder
 
         assert len(self.t2m_dataset) > 1, 'You loaded an empty dataset, ' \
@@ -1119,9 +1210,75 @@ class HumanML3D(data.Dataset):
         return self.t2m_dataset.__len__()
 
 # A wrapper class for t2m original dataset for MDM purposes
-class KIT(HumanML3D):
-    def __init__(self, load_mode, datapath='./dataset/kit_opt.txt', split="train", **kwargs):
-        super(KIT, self).__init__(load_mode, datapath, split, **kwargs)
+class KIT(data.Dataset):
+    def __init__(self, load_mode, datapath='./dataset/kit_opt.txt', split="train",dataset_name="kit", **kwargs):
+        self.load_mode = load_mode
+        
+        #change here!!!
+        self.dataset_name = dataset_name
+        self.dataname = 't2m'
+        self.split = split
+
+        # Configurations of T2M dataset and KIT dataset is almost the same
+        abs_base_path = f'.'
+        dataset_opt_path = pjoin(abs_base_path, datapath)
+        device = None  # torch.device('cuda:4') # This param is not in use in this context
+        opt = get_opt(dataset_opt_path, device)
+        opt.meta_dir = pjoin(abs_base_path, opt.meta_dir)
+        opt.motion_dir = pjoin(abs_base_path, opt.motion_dir)
+        opt.text_dir = pjoin(abs_base_path, opt.text_dir)
+        opt.model_dir = pjoin(abs_base_path, opt.model_dir)
+        opt.checkpoints_dir = pjoin(abs_base_path, opt.checkpoints_dir)
+        opt.data_root = pjoin(abs_base_path, opt.data_root)
+        opt.save_root = pjoin(abs_base_path, opt.save_root)
+        opt.meta_dir = '/work/vig/zhonglei/Control-mdm/dataset'
+        opt.load_mode = load_mode
+        self.opt = opt
+        print('Loading dataset %s ...' % opt.dataset_name)
+
+        if load_mode == 'gt':
+            # used by T2M models (including evaluators)
+            self.mean = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_mean.npy'))
+            self.std = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy'))
+        elif load_mode in ['train', 'eval', 'text_only', 'prefix', 'text']:
+            # used by our models
+            if self.dataset_name == "t2m":
+                self.mean = np.load(pjoin("/work/vig/Datasets/HumanML3D/HumanML3D", 'Mean.npy'))
+                self.std = np.load(pjoin("/work/vig/Datasets/HumanML3D/HumanML3D", 'Std.npy'))
+            else:
+                self.mean = np.load(pjoin("/work/vig/zhonglei/Control-mdm/dataset/KIT-ML", 'Mean.npy'))
+                self.std = np.load(pjoin("/work/vig/zhonglei/Control-mdm/dataset/KIT-ML", 'Std.npy'))
+        if load_mode == 'eval':
+            # used by T2M models (including evaluators)
+            # this is to translate their norms to ours
+            self.mean_for_eval = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_mean.npy'))
+            self.std_for_eval = np.load(pjoin(opt.meta_dir, f'{opt.dataset_name}_std.npy'))
+
+        self.split_file = pjoin(opt.data_root, f'{split}.txt')
+        print("self.split_file",self.split_file)
+        if load_mode == 'text_only':
+            self.t2m_dataset = TextOnlyDataset(self.opt, self.mean, self.std, self.split_file, **kwargs)
+        else:
+            self.w_vectorizer = WordVectorizer(pjoin(abs_base_path, 'glove'), 'our_vab')
+
+            if hasattr(opt, 'dataset_type') and opt.dataset_type == 'pw3d':
+                self.t2m_dataset = PW3D_Text2MotionDatasetV2(self.opt, self.mean, self.std, self.split,
+                                                             self.w_vectorizer)
+            else:
+                self.t2m_dataset = Text2MotionDatasetV2(self.opt, self.mean, self.std, self.split_file, self.w_vectorizer, **kwargs)
+                print("len(self.t2m_dataset)",len(self.t2m_dataset))
+            self.num_actions = 1 # dummy placeholder
+
+        assert len(self.t2m_dataset) > 1, 'You loaded an empty dataset, ' \
+                                          'it is probably because your data dir has only texts and no motions.\n' \
+                                          'To train and evaluate MDM you should get the FULL data as described ' \
+                                          'in the README file.'
+
+    def __getitem__(self, item):
+        return self.t2m_dataset.__getitem__(item)
+
+    def __len__(self):
+        return self.t2m_dataset.__len__()
 
 # A wrapper class for t2m original dataset for MDM purposes
 class PW3D(HumanML3D):
