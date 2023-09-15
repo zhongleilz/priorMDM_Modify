@@ -37,6 +37,8 @@ def load_from_model(args, parser, task=''):
     args.model_path = args.model_path if task != 'multi_train' else args.pretrained_path
     # load args from model
     args_path = os.path.join(os.path.dirname(args.model_path), 'args.json')
+
+    print("args_path",args_path)
     assert os.path.exists(args_path), 'Arguments json file was not found!'
     with open(args_path, 'r') as fr:
         model_args = json.load(fr)
@@ -125,7 +127,7 @@ def add_model_options(parser):
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
-    group.add_argument("--dataset", default='humanml', choices=['humanml', 'amass', 'babel'], type=str,
+    group.add_argument("--dataset", default='humanml', choices=['humanml', 'amass', 'babel','kit'], type=str,
                        help="Dataset name (choose from list).")
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
@@ -190,6 +192,9 @@ def add_inpainting_options(parser):
                            or one of the joints in the humanml body format: \
                            pelvis, left_hip, right_hip, spine1, left_knee, right_knee, spine2, left_ankle, right_ankle, spine3, left_foot, \
                             right_foot, neck, left_collar, right_collar, head, left_shoulder, right_shoulder, left_elbow, right_elbow, left_wrist, right_wrist,")
+    
+    group.add_argument("--masked_rate", default=5, type = float,
+                       help="masked rate for the control signal")
     group.add_argument("--no_filter_noise", action='store_false', dest='filter_noise',
                        help="When true, the noise will be filtered from the inpainted features.")
     parser.set_defaults(filter_noise=True)
