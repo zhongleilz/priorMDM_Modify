@@ -1,7 +1,9 @@
+import sys
+sys.path.append("/work/vig/zhonglei/priorMDM")
 from diffusion.respace import SpacedDiffusion
 from .gaussian_diffusion import _extract_into_tensor
 import torch as th
-
+import numpy as np
 class InpaintingGaussianDiffusion(SpacedDiffusion):
     def q_sample(self, x_start, t, noise=None, model_kwargs=None):
         """
@@ -11,10 +13,15 @@ class InpaintingGaussianDiffusion(SpacedDiffusion):
         """
         if noise is None:
             noise = th.randn_like(x_start)
+        
+
         assert noise.shape == x_start.shape
 
         bs, feat, _, frames = noise.shape
         noise *= 1. - model_kwargs['y']['inpainting_mask']
+
+        
+        inpainting_mask_idx = th.where(model_kwargs['y']['inpainting_mask'][0,1,:,:] == 1)
         return (
                 _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
                 + _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
